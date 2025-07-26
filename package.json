@@ -1,0 +1,12 @@
+{
+  "name": "mcp-elvis-simple",
+  "version": "0.1.0",
+  "description": "Simple MCP server for ELVIS - delegates tasks to Ollama asynchronously",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^0.5.0"
+  }
+}

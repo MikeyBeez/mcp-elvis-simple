@@ -1,0 +1,42 @@
+You are an expert in user interface design and cognitive psychology. Analyze the following working memory injection methods and determine which would be most effective for an AI assistant.
+
+Context: We have a 7-slot working memory system that stores important information across conversation turns. The challenge is determining when and how to surface these memories to be most helpful without being intrusive.
+
+Methods to evaluate:
+
+1. **Start of Conversation Method**: Display all 7 memories at the beginning of each conversation
+   - Pros: User always knows what's remembered
+   - Cons: May be irrelevant noise, takes up context space
+
+2. **Help Command Integration**: Show memories when user asks for help (current implementation)
+   - Pros: Non-intrusive, user-initiated
+   - Cons: Memories hidden unless user checks help
+
+3. **Context-Aware Injection**: Detect keywords in user messages and show relevant memories
+   - Pros: Timely and relevant
+   - Cons: Complex to implement, may miss connections
+
+4. **Periodic Summary**: Show memory summary every N messages
+   - Pros: Regular visibility
+   - Cons: Can interrupt flow
+
+5. **Tool-Specific Integration**: Show relevant memories before tool operations
+   - Pros: Contextual to actions
+   - Cons: Limited to tool usage
+
+6. **On-Demand with Notification**: Small indicator showing memory count, full display on request
+   - Pros: Unobtrusive but visible
+   - Cons: Requires user action
+
+7. **Smart Threshold**: Only show memories when confidence of relevance exceeds threshold
+   - Pros: Reduces noise
+   - Cons: May miss useful connections
+
+Please analyze these methods considering:
+- Cognitive load on the user
+- Likelihood of memories being useful when shown
+- Implementation complexity
+- User experience flow
+- Balance between visibility and intrusiveness
+
+Recommend the single best method and explain why. Also suggest how to test effectiveness.
