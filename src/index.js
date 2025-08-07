@@ -19,6 +19,9 @@ const WorkingMemory = require('./working-memory.js');
 // Import screen control
 const ScreenControl = require('./screen-control.js');
 
+// Import Ollama manager with auto-start
+const OllamaManager = require('./ollama-manager.js');
+
 // Simple in-memory task tracking
 const tasks = new Map();
 
@@ -28,6 +31,9 @@ const workingMemory = new WorkingMemory(7);
 // Initialize screen control
 const screenControl = new ScreenControl();
 screenControl.init().catch(console.error);
+
+// Initialize Ollama manager
+const ollamaManager = new OllamaManager();
 
 const server = new Server(
   {
@@ -46,35 +52,10 @@ function generateTaskId() {
   return `task_${Date.now()}_${Math.random().toString(36).substring(7)}`;
 }
 
-// Helper to call Ollama
+// Helper to call Ollama (now with auto-start capability)
 async function callOllama(prompt, model = 'llama3.2', images = []) {
-  try {
-    const body = {
-      model,
-      prompt,
-      stream: false
-    };
-    
-    // Add images if provided (for vision models)
-    if (images && images.length > 0) {
-      body.images = images;
-    }
-    
-    const response = await fetch('http://localhost:11434/api/generate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
-    });
-    
-    if (!response.ok) {
-      throw new Error(`Ollama error: ${response.statusText}`);
-    }
-    
-    const data = await response.json();
-    return data.response;
-  } catch (error) {
-    throw new Error(`Failed to call Ollama: ${error.message}`);
-  }
+  const result = await ollamaManager.callOllama(prompt, model, images);
+  return result.response;
 }
 
 // Tool handlers
