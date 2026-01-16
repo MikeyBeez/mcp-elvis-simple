@@ -53,7 +53,7 @@ function generateTaskId() {
 }
 
 // Helper to call Ollama (now with auto-start capability)
-async function callOllama(prompt, model = 'llama3.2', images = []) {
+async function callOllama(prompt, model = 'llama3.1:latest', images = []) {
   const result = await ollamaManager.callOllama(prompt, model, images);
   return result.response;
 }
@@ -74,8 +74,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             },
             model: {
               type: 'string',
-              description: 'Ollama model to use (default: llama3.2)',
-              enum: ['llama3.2', 'deepseek-r1', 'mixtral', 'gemma:2b', 'phi3:mini']
+              description: 'Ollama model to use (default: llama3.1:latest)',
+              enum: ['llama3.1:latest', 'llama3.1:32k', 'llama3.1:45k', 'llama3.1:50k', 'llama3.1:64k', 'codellama:latest']
             },
             context: {
               type: 'string',
@@ -243,6 +243,29 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           type: 'object',
           properties: {},
         },
+      },
+      {
+        name: 'elvis_execute',
+        description: 'Execute Python or Shell code locally to verify answers or perform calculations',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            code: {
+              type: 'string',
+              description: 'Code to execute'
+            },
+            language: {
+              type: 'string',
+              description: 'Language: python or shell (default: auto-detect)',
+              enum: ['python', 'shell', 'auto']
+            },
+            timeout: {
+              type: 'number',
+              description: 'Timeout in milliseconds (default: 30000)'
+            }
+          },
+          required: ['code'],
+        },
       }
     ],
   };
@@ -253,7 +276,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   
   switch (name) {
     case 'elvis_delegate': {
-      const { task, model = 'llama3.2', context = '' } = args;
+      const { task, model = 'llama3.1:latest', context = '' } = args;
       const taskId = generateTaskId();
       
       // Create task record
@@ -454,9 +477,12 @@ ${workingMemory.slots.length > 0 ? workingMemory.getSummary() + '\n\n' : ''}## A
 8. **elvis_screen_info** - Get display information
 9. **elvis_cleanup_screenshots** - Clean temp files
 
+### Code Execution:
+10. **elvis_execute** - Run Python/Shell code locally
+
 ### Memory & Help:
-10. **elvis_memory** - Manage working memory (7 slots)
-11. **elvis_help** - This help system
+11. **elvis_memory** - Manage working memory (7 slots)
+12. **elvis_help** - This help system
 
 ## Quick Start:
 
@@ -979,7 +1005,7 @@ Screen analysis results are automatically stored in working memory and can be us
     
     case 'elvis_cleanup_screenshots': {
       const result = await screenControl.cleanup();
-      
+
       if (!result.success) {
         return {
           content: [{
@@ -988,7 +1014,7 @@ Screen analysis results are automatically stored in working memory and can be us
           }]
         };
       }
-      
+
       return {
         content: [{
           type: 'text',
@@ -996,7 +1022,89 @@ Screen analysis results are automatically stored in working memory and can be us
         }]
       };
     }
-    
+
+    case 'elvis_execute': {
+      const { code, language = 'auto', timeout = 30000 } = args;
+
+      // Auto-detect language
+      let lang = language;
+      if (lang === 'auto') {
+        // Python indicators
+        if (code.includes('def ') || code.includes('import ') || code.includes('print(') ||
+            code.includes('for ') || code.includes('if ') || code.includes('from ')) {
+          lang = 'python';
+        } else {
+          lang = 'shell';
+        }
+      }
+
+      try {
+        let result;
+        const startTime = Date.now();
+
+        if (lang === 'python') {
+          // Write code to temp file and execute
+          const tmpFile = path.join(os.tmpdir(), `elvis_exec_${Date.now()}.py`);
+          await fs.writeFile(tmpFile, code);
+
+          try {
+            const { stdout, stderr } = await execAsync(`python3 "${tmpFile}"`, {
+              timeout,
+              maxBuffer: 1024 * 1024 // 1MB
+            });
+            result = {
+              success: true,
+              output: stdout,
+              stderr: stderr || null,
+              language: 'python'
+            };
+          } finally {
+            // Cleanup temp file
+            await fs.unlink(tmpFile).catch(() => {});
+          }
+        } else {
+          // Shell execution
+          const { stdout, stderr } = await execAsync(code, {
+            timeout,
+            maxBuffer: 1024 * 1024
+          });
+          result = {
+            success: true,
+            output: stdout,
+            stderr: stderr || null,
+            language: 'shell'
+          };
+        }
+
+        const duration = Date.now() - startTime;
+
+        // Store in working memory
+        const summary = `Executed ${lang}: ${code.substring(0, 50)}... → ${result.output.substring(0, 30)}...`;
+        workingMemory.add(summary, 'result', 4, ['execute', lang]);
+
+        let responseText = `⚡ Code Execution Result\n\nLanguage: ${result.language}\nDuration: ${duration}ms\n\n`;
+        responseText += `Output:\n${result.output}`;
+        if (result.stderr) {
+          responseText += `\nStderr:\n${result.stderr}`;
+        }
+
+        return {
+          content: [{
+            type: 'text',
+            text: responseText
+          }]
+        };
+
+      } catch (error) {
+        return {
+          content: [{
+            type: 'text',
+            text: `❌ Execution Failed\n\nLanguage: ${lang}\nError: ${error.message}\n\n${error.stderr || ''}`
+          }]
+        };
+      }
+    }
+
     default:
       throw new Error(`Unknown tool: ${name}`);
   }

@@ -7,27 +7,33 @@ const execAsync = promisify(exec);
 
 class OllamaManager {
   constructor() {
-    this.host = 'localhost';
-    this.port = 11434;
+    // Use OLLAMA_HOST env var if set, otherwise default to Linux box
+    this.host = process.env.OLLAMA_HOST || '192.168.12.175';
+    this.port = parseInt(process.env.OLLAMA_PORT) || 11434;
     this.baseUrl = `http://${this.host}:${this.port}`;
     this.plistPath = '/Users/bard/Library/LaunchAgents/com.ollama.server.plist';
     this.maxStartupTime = 30000; // 30 seconds
+    this.isRemote = this.host !== 'localhost' && this.host !== '127.0.0.1';
   }
 
   // Check if Ollama is running and responding
   async isRunning() {
     try {
+      console.error(`[OllamaManager] Checking ${this.baseUrl}/api/version...`);
       const response = await fetch(`${this.baseUrl}/api/version`, {
         method: 'GET',
-        signal: AbortSignal.timeout(5000) // 5 second timeout
+        signal: AbortSignal.timeout(10000) // 10 second timeout
       });
-      
+
       if (response.ok) {
         const data = await response.json();
+        console.error(`[OllamaManager] Connected! Version: ${data.version}`);
         return { running: true, version: data.version };
       }
+      console.error(`[OllamaManager] HTTP error: ${response.status}`);
       return { running: false, error: `HTTP ${response.status}` };
     } catch (error) {
+      console.error(`[OllamaManager] Connection failed: ${error.message}`);
       return { running: false, error: error.message };
     }
   }
@@ -56,13 +62,24 @@ class OllamaManager {
   // Start Ollama if not running
   async ensureRunning() {
     const status = await this.isRunning();
-    
+
     if (status.running) {
-      return { 
-        success: true, 
+      return {
+        success: true,
         action: 'already_running',
         version: status.version,
-        message: `Ollama is running (v${status.version})`
+        host: this.host,
+        message: `Ollama is running on ${this.host} (v${status.version})`
+      };
+    }
+
+    // If using remote host, we can't auto-start it
+    if (this.isRemote) {
+      return {
+        success: false,
+        error: `Remote Ollama at ${this.host}:${this.port} is not responding. Please ensure Ollama is running on the remote host.`,
+        action: 'remote_unavailable',
+        host: this.host
       };
     }
 
@@ -71,11 +88,11 @@ class OllamaManager {
 
     // Check if service is loaded
     const isLoaded = await this.isServiceLoaded();
-    
+
     if (!isLoaded) {
       console.error('Loading Ollama launchd service...');
       const loadResult = await this.loadService();
-      
+
       if (!loadResult.success) {
         return {
           success: false,
@@ -88,10 +105,10 @@ class OllamaManager {
     // Wait for Ollama to start
     console.error('Waiting for Ollama to start...');
     const startTime = Date.now();
-    
+
     while (Date.now() - startTime < this.maxStartupTime) {
       await new Promise(resolve => setTimeout(resolve, 1000));
-      
+
       const checkStatus = await this.isRunning();
       if (checkStatus.running) {
         const startupTime = ((Date.now() - startTime) / 1000).toFixed(1);
