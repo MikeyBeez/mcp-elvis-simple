@@ -53,7 +53,7 @@ function generateTaskId() {
 }
 
 // Helper to call Ollama (now with auto-start capability)
-async function callOllama(prompt, model = 'llama3.1:latest', images = []) {
+async function callOllama(prompt, model = 'deepseek-r1:7b', images = []) {
   const result = await ollamaManager.callOllama(prompt, model, images);
   return result.response;
 }
@@ -74,8 +74,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             },
             model: {
               type: 'string',
-              description: 'Ollama model to use (default: llama3.1:latest)',
-              enum: ['llama3.1:latest', 'llama3.1:32k', 'llama3.1:45k', 'llama3.1:50k', 'llama3.1:64k', 'codellama:latest']
+              description: 'Ollama model to use (default: deepseek-r1:7b)',
+              enum: ['deepseek-r1:7b', 'llama3.1:latest', 'llama3.1:32k', 'llama3.1:45k', 'llama3.1:50k', 'llama3.1:64k', 'codellama:latest']
             },
             context: {
               type: 'string',
@@ -266,6 +266,45 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           },
           required: ['code'],
         },
+      },
+      {
+        name: 'elvis_solve_math',
+        description: 'Solve a math problem with automatic routing: triages difficulty, then routes easy problems to fast direct solve, hard problems to reasoning model + Python verification',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            problem: {
+              type: 'string',
+              description: 'The math problem to solve'
+            },
+            force_hard: {
+              type: 'boolean',
+              description: 'Force hard problem path (skip triage, use full reasoning)'
+            }
+          },
+          required: ['problem'],
+        },
+      },
+      {
+        name: 'elvis_math_benchmark',
+        description: 'Run benchmark on multiple math problems with routing statistics',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            problems: {
+              type: 'array',
+              description: 'Array of {problem: string, answer: string} objects',
+              items: {
+                type: 'object',
+                properties: {
+                  problem: { type: 'string' },
+                  answer: { type: 'string' }
+                }
+              }
+            }
+          },
+          required: ['problems'],
+        },
       }
     ],
   };
@@ -276,7 +315,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   
   switch (name) {
     case 'elvis_delegate': {
-      const { task, model = 'llama3.1:latest', context = '' } = args;
+      const { task, model = 'deepseek-r1:7b', context = '' } = args;
       const taskId = generateTaskId();
       
       // Create task record
@@ -1019,6 +1058,245 @@ Screen analysis results are automatically stored in working memory and can be us
         content: [{
           type: 'text',
           text: `🧹 Cleanup complete!\n\nRemoved ${result.cleaned} screenshot files.`
+        }]
+      };
+    }
+
+    case 'elvis_solve_math': {
+      const { problem, force_hard = false } = args;
+      const startTime = Date.now();
+
+      // Helper to extract numerical answer
+      function extractAnswer(text) {
+        // Boxed answer (LaTeX)
+        const boxed = text.match(/\\boxed\{([^}]+)\}/);
+        if (boxed) return boxed[1].replace(/,/g, '').trim();
+
+        // Bold answer (markdown)
+        const bold = text.match(/\*\*(-?\d+(?:,\d+)*(?:\.\d+)?)\*\*/);
+        if (bold) return bold[1].replace(/,/g, '');
+
+        // "answer is X" pattern
+        const answerMatch = text.match(/(?:answer is|the answer is|=)\s*\$?(-?\d+(?:,\d+)*(?:\.\d+)?)/i);
+        if (answerMatch) return answerMatch[1].replace(/,/g, '');
+
+        // Last number in response
+        const numbers = text.match(/\b(\d+)\b/g);
+        if (numbers && numbers.length > 0) return numbers[numbers.length - 1];
+
+        return null;
+      }
+
+      // Helper to run Python code
+      async function runPython(code) {
+        const tmpFile = path.join(os.tmpdir(), `elvis_math_${Date.now()}.py`);
+        await fs.writeFile(tmpFile, code);
+        try {
+          const { stdout } = await execAsync(`python3 "${tmpFile}"`, { timeout: 30000 });
+          return { success: true, output: stdout.trim() };
+        } catch (e) {
+          return { success: false, error: e.message };
+        } finally {
+          await fs.unlink(tmpFile).catch(() => {});
+        }
+      }
+
+      let triageResult = { can_solve: true, difficulty: 'easy', reason: 'default' };
+      let method = 'direct';
+
+      // PASS 1: Triage (unless force_hard)
+      if (!force_hard) {
+        const triagePrompt = `Analyze this math problem and decide if a simple calculation can solve it.
+
+PROBLEM:
+${problem}
+
+Answer ONLY with JSON:
+{"can_solve": true/false, "difficulty": "easy/medium/hard", "reason": "brief explanation"}
+
+Return false for:
+- Numbers > 1,000,000
+- More than 5 calculation steps
+- Modular arithmetic with large numbers
+- Combinatorics with n > 20
+- Number theory (primes, divisibility of large numbers)
+- Complex floor/ceiling expressions
+- Competition math problems
+
+If unsure, return false.`;
+
+        try {
+          const triageResponse = await callOllama(triagePrompt, 'qwen2-math:7b');
+          const jsonMatch = triageResponse.match(/\{[^}]+\}/);
+          if (jsonMatch) {
+            triageResult = JSON.parse(jsonMatch[0]);
+          }
+        } catch (e) {
+          triageResult = { can_solve: false, difficulty: 'unknown', reason: 'triage failed' };
+        }
+      } else {
+        triageResult = { can_solve: false, difficulty: 'hard', reason: 'force_hard flag' };
+      }
+
+      const triageDuration = Date.now() - startTime;
+
+      // PASS 2: Solve based on triage
+      let answer = null;
+      let reasoning = '';
+      let pythonVerification = null;
+
+      if (triageResult.can_solve) {
+        // Easy path: direct solve with fast model
+        method = 'direct';
+        const solvePrompt = `Solve this math problem. Show your work and give the final numerical answer.
+
+${problem}
+
+End with: The answer is [NUMBER]`;
+
+        reasoning = await callOllama(solvePrompt, 'qwen2-math:7b');
+        answer = extractAnswer(reasoning);
+
+      } else {
+        // Hard path: reasoning model + Python verification
+        method = 'reasoning+python';
+
+        // Step 1: Get reasoning and Python code from deepseek
+        const solvePrompt = `Solve this math problem step by step. Then write Python code to verify.
+
+PROBLEM:
+${problem}
+
+First explain your reasoning, then provide Python code that computes and prints the final answer.
+Format the code in a ```python block.`;
+
+        reasoning = await callOllama(solvePrompt, 'deepseek-r1:7b');
+
+        // Step 2: Extract and run Python code
+        const pythonMatch = reasoning.match(/```python\n([\s\S]*?)```/);
+        if (pythonMatch) {
+          pythonVerification = await runPython(pythonMatch[1]);
+          if (pythonVerification.success) {
+            // Trust Python output for answer
+            const pythonAnswer = extractAnswer(pythonVerification.output);
+            if (pythonAnswer) {
+              answer = pythonAnswer;
+            }
+          }
+        }
+
+        // Fallback to extracting from reasoning if Python failed
+        if (!answer) {
+          answer = extractAnswer(reasoning);
+        }
+      }
+
+      const totalDuration = Date.now() - startTime;
+
+      // Store in working memory
+      workingMemory.add(
+        `Math: ${problem.substring(0, 50)}... → ${answer}`,
+        'result',
+        4,
+        ['math', method, triageResult.difficulty]
+      );
+
+      return {
+        content: [{
+          type: 'text',
+          text: `🧮 Math Problem Solved
+
+**Problem:** ${problem.substring(0, 200)}${problem.length > 200 ? '...' : ''}
+
+**Answer:** ${answer || 'Could not extract'}
+
+**Routing:**
+- Triage: ${triageResult.difficulty} (${triageResult.reason})
+- Method: ${method}
+- Triage time: ${triageDuration}ms
+- Total time: ${totalDuration}ms
+
+${pythonVerification ? `**Python Verification:** ${pythonVerification.success ? '✓ ' + pythonVerification.output : '✗ ' + pythonVerification.error}` : ''}
+
+**Reasoning (truncated):**
+${reasoning.substring(0, 500)}${reasoning.length > 500 ? '...' : ''}`
+        }]
+      };
+    }
+
+    case 'elvis_math_benchmark': {
+      const { problems } = args;
+      const results = [];
+      let correct = 0;
+      let directCount = 0;
+      let hardCount = 0;
+
+      for (let i = 0; i < problems.length; i++) {
+        const { problem, answer: expected } = problems[i];
+        console.error(`[${i + 1}/${problems.length}] Solving...`);
+
+        const startTime = Date.now();
+
+        // Reuse the solve logic (simplified inline version)
+        let triageResult = { can_solve: true };
+        let method = 'direct';
+        let predicted = null;
+
+        // Triage
+        try {
+          const triagePrompt = `Is this an easy math problem solvable in <5 steps with small numbers? Answer JSON only: {"can_solve": true/false}
+
+${problem}`;
+          const triageResp = await callOllama(triagePrompt, 'qwen2-math:7b');
+          const match = triageResp.match(/\{[^}]+\}/);
+          if (match) triageResult = JSON.parse(match[0]);
+        } catch (e) {
+          triageResult = { can_solve: false };
+        }
+
+        // Solve
+        if (triageResult.can_solve) {
+          method = 'direct';
+          directCount++;
+          const resp = await callOllama(`Solve: ${problem}\n\nAnswer with just the number.`, 'qwen2-math:7b');
+          const nums = resp.match(/\b(\d+)\b/g);
+          if (nums) predicted = nums[nums.length - 1];
+        } else {
+          method = 'hard';
+          hardCount++;
+          const resp = await callOllama(`Solve step by step: ${problem}`, 'deepseek-r1:7b');
+          const nums = resp.match(/\b(\d+)\b/g);
+          if (nums) predicted = nums[nums.length - 1];
+        }
+
+        const isCorrect = predicted === expected;
+        if (isCorrect) correct++;
+
+        results.push({
+          problem: problem.substring(0, 50) + '...',
+          expected,
+          predicted,
+          correct: isCorrect,
+          method,
+          duration_ms: Date.now() - startTime
+        });
+      }
+
+      const summary = `📊 Benchmark Results
+
+**Accuracy:** ${correct}/${problems.length} = ${(100 * correct / problems.length).toFixed(1)}%
+
+**Routing:**
+- Direct (easy): ${directCount} (${(100 * directCount / problems.length).toFixed(0)}%)
+- Hard path: ${hardCount} (${(100 * hardCount / problems.length).toFixed(0)}%)
+
+**Details:**
+${results.map((r, i) => `${i + 1}. ${r.correct ? '✓' : '✗'} [${r.method}] pred=${r.predicted} truth=${r.expected} (${r.duration_ms}ms)`).join('\n')}`;
+
+      return {
+        content: [{
+          type: 'text',
+          text: summary
         }]
       };
     }
