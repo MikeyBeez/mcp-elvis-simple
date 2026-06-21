@@ -8,10 +8,10 @@ const execAsync = promisify(exec);
 class OllamaManager {
   constructor() {
     // Use OLLAMA_HOST env var if set, otherwise default to Linux box
-    this.host = process.env.OLLAMA_HOST || '192.168.12.175';
+    this.host = process.env.OLLAMA_HOST || '192.168.x.x';
     this.port = parseInt(process.env.OLLAMA_PORT) || 11434;
     this.baseUrl = `http://${this.host}:${this.port}`;
-    this.plistPath = '/Users/bard/Library/LaunchAgents/com.ollama.server.plist';
+    this.plistPath = `${process.env.HOME}/Library/LaunchAgents/com.ollama.server.plist`;
     this.maxStartupTime = 30000; // 30 seconds
     this.isRemote = this.host !== 'localhost' && this.host !== '127.0.0.1';
   }

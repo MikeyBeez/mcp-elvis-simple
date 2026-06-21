@@ -1129,7 +1129,14 @@ If unsure, return false.`;
           const triageResponse = await callOllama(triagePrompt, 'qwen2-math:7b');
           const jsonMatch = triageResponse.match(/\{[^}]+\}/);
           if (jsonMatch) {
-            triageResult = JSON.parse(jsonMatch[0]);
+            const parsed = JSON.parse(jsonMatch[0]);
+            // Normalize key variations (model sometimes returns "can.solve" instead of "can_solve")
+            const canSolve = parsed.can_solve ?? parsed['can.solve'] ?? parsed.canSolve ?? false;
+            triageResult = {
+              can_solve: canSolve === true || canSolve === 'true',
+              difficulty: parsed.difficulty || 'unknown',
+              reason: parsed.reason || ''
+            };
           }
         } catch (e) {
           triageResult = { can_solve: false, difficulty: 'unknown', reason: 'triage failed' };
@@ -1168,7 +1175,7 @@ PROBLEM:
 ${problem}
 
 First explain your reasoning, then provide Python code that computes and prints the final answer.
-Format the code in a ```python block.`;
+Format the code in a \`\`\`python block.`;
 
         reasoning = await callOllama(solvePrompt, 'deepseek-r1:7b');
 
@@ -1249,7 +1256,11 @@ ${reasoning.substring(0, 500)}${reasoning.length > 500 ? '...' : ''}`
 ${problem}`;
           const triageResp = await callOllama(triagePrompt, 'qwen2-math:7b');
           const match = triageResp.match(/\{[^}]+\}/);
-          if (match) triageResult = JSON.parse(match[0]);
+          if (match) {
+            const parsed = JSON.parse(match[0]);
+            const canSolve = parsed.can_solve ?? parsed['can.solve'] ?? parsed.canSolve ?? false;
+            triageResult = { can_solve: canSolve === true || canSolve === 'true' };
+          }
         } catch (e) {
           triageResult = { can_solve: false };
         }
